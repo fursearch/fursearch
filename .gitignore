@@ -1,0 +1,47 @@
+tests/*.jpg
+tests/**/*.jpg
+tests/*.jpeg
+tests/**/*.jpeg
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.python-version
+
+# Environment
+.env
+.env.*
+
+# Model weights
+*.pt
+
+# Database and index files
+*.db
+*.db-*
+*.index
+*.backup
+
+# Downloaded data
+datasets/
+embeddings/
+runs/
+fursearch_crops/
+fursearch_masks/
+static/models/
+
+# SSL certificates
+certs/
+
+# Backups
+*.bak
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# macOS
+._*
+.DS_Store

@@ -1,0 +1,15 @@
+[Unit]
+Description=Fursearch Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/mnt/volume/fursearch
+ExecStart=/mnt/volume/fursearch/.venv/bin/python tgbot.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/mnt/volume/fursearch/.env
+
+[Install]
+WantedBy=multi-user.target

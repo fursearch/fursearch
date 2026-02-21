@@ -1,0 +1,9 @@
+static/models/clip-vit-base-patch32/config.json filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32/tokenizer.json filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32/tokenizer_config.json filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32/onnx filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32/onnx/model_quantized.onnx filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32/onnx/text_model_quantized.onnx filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32/onnx/vision_model_quantized.onnx filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32/preprocessor_config.json filter=lfs diff=lfs merge=lfs -text
+static/models/clip-vit-base-patch32 filter=lfs diff=lfs merge=lfs -text
