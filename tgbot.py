@@ -45,6 +45,7 @@ FURSEARCH_CAPTION_PATTERN = re.compile(r"^/fursearch\s+(.+)", re.IGNORECASE)
 _identifiers: Optional[list[FursuitIdentifier]] = None
 _ingestor: Optional[FursuitIngestor] = None
 _tracker: Optional[IdentificationTracker] = None
+_ingestor_lock = asyncio.Lock()  # serializes add_images: FAISS writes are not thread-safe
 
 # Media group buffering: media_group_id -> list of Update objects
 _media_group_buffers: dict[str, list[Update]] = {}
@@ -78,8 +79,11 @@ def _save_submission_metadata(post_id: str, character_url: Optional[str] = None,
 
 def _get_page_url(source: Optional[str], post_id: str, character_name: Optional[str] = None) -> Optional[str]:
     """Get a page URL for a detection."""
+    
     if source == SOURCE_TGBOT:
-        return _get_submission_character_url(post_id)
+        char_url = _get_submission_character_url(post_id)
+        if char_url:
+            return char_url
     return get_source_url(source, post_id, character_name=character_name)
 
 
@@ -431,14 +435,15 @@ async def add_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, characte
         post_id_path = temp_path.parent / f"{post_id}.jpg"
         temp_path.rename(post_id_path)
         ingestor = get_ingestor()
-        added = await asyncio.to_thread(
-            ingestor.add_images,
-            character_names=[character_name],
-            image_paths=[str(post_id_path)],
-            source=SOURCE_TGBOT,
-            uploaded_by=uploaded_by,
-            add_full_image=True,
-        )
+        async with _ingestor_lock:
+            added = await asyncio.to_thread(
+                ingestor.add_images,
+                character_names=[character_name],
+                image_paths=[str(post_id_path)],
+                source=SOURCE_TGBOT,
+                uploaded_by=uploaded_by,
+                add_full_image=True,
+            )
 
         # Clean up temp file
         # os.unlink(temp_path)

@@ -1,3 +1,4 @@
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -88,6 +89,7 @@ class SAM3FursuitSegmentor:
         self.model_name = model_name or Config.SAM3_MODEL
         self.concept = concept or Config.DEFAULT_CONCEPT
         self._predictor = None
+        self._lock = threading.Lock()
 
     @property
     def predictor(self):
@@ -110,6 +112,10 @@ class SAM3FursuitSegmentor:
 
 
     def segment(self, image: Image.Image) -> list[SegmentationResult]:
+        with self._lock:
+            return self._segment_locked(image)
+
+    def _segment_locked(self, image: Image.Image) -> list[SegmentationResult]:
         print(f"Segmenting image using {self.model_name} with concept '{self.concept}'")
         image_np = np.array(image.convert("RGB"))
         self.predictor.set_image(image_np)
