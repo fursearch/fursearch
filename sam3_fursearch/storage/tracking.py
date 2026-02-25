@@ -352,6 +352,24 @@ class IdentificationTracker:
         row = c.fetchone()
         return self._feedback_row_to_dict(row) if row else None
 
+    def get_daily_stats(self, days: int = 90) -> list[dict]:
+        """Per-day query counts and DAU for the last N days, ordered chronologically."""
+        conn = self._connect()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT DATE(created_at) as day,
+                   COUNT(*) as queries,
+                   COUNT(DISTINCT telegram_user_id) as dau
+            FROM identification_requests
+            WHERE created_at >= DATE('now', ?)
+            GROUP BY DATE(created_at)
+            ORDER BY day
+            """,
+            (f"-{days} days",),
+        )
+        return [{"date": row[0], "queries": row[1], "dau": row[2]} for row in c.fetchall()]
+
     def get_stats(self) -> dict:
         """Get tracking statistics: request counts, unique users, hit rates, avg time."""
         conn = self._connect()

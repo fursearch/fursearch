@@ -1042,14 +1042,15 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         from collections import Counter
+        from datetime import date, timedelta
         from sam3_fursearch.storage.database import bucketize
 
+        chat_id = update.effective_chat.id
         identifiers = get_identifiers()
+
+        # ── Aggregate DB stats ──
         all_characters = set()
         all_posts = set()
-        stats_list = [ident.get_stats() for ident in identifiers]
-        combined_stats = FursuitIdentifier.get_combined_stats(stats_list)
-
         char_posts = Counter()
         post_segments = Counter()
         for ident in identifiers:
@@ -1060,24 +1061,20 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for post, cnt in ident.db.get_post_segment_counts().items():
                 post_segments[post] += cnt
 
-        combined_stats["unique_characters"] = len(all_characters)
-        combined_stats["unique_posts"] = len(all_posts)
-        combined_stats["posts_per_character"] = bucketize(Counter(char_posts.values()))
-        combined_stats["segments_per_post"] = bucketize(Counter(post_segments.values()))
-        del combined_stats["top_characters"]
+        posts_per_char_dist = bucketize(Counter(char_posts.values()))
+        segs_per_post_dist = bucketize(Counter(post_segments.values()))
 
-        identifiers = get_identifiers()
-
-        char_posts = Counter()
+        # Top characters from default dataset only
+        default_char_posts = Counter()
         for ident in identifiers:
             if Path(ident.db.db_path).stem != Config.DEFAULT_DATASET:
                 continue
             for char, cnt in ident.db.get_character_post_counts().items():
-                char_posts[char] += cnt
+                default_char_posts[char] += cnt
+        top_chars = default_char_posts.most_common(10)
+        total_chars = len(default_char_posts)
 
-        top_chars = char_posts.most_common(10)
-        total_chars = len(char_posts)
-
+        # Top senders
         sender_counts = Counter()
         for ident in identifiers:
             conn = ident.db._connect()
@@ -1090,22 +1087,98 @@ async def adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """)
             for sender, cnt in c.fetchall():
                 sender_counts[sender] += cnt
-
         top_senders = sender_counts.most_common(10)
-        combined_stats["top_characters"] = [{"character_name": char, "post_count": cnt} for char, cnt in top_chars]
-        combined_stats["top_senders"] = [{"sender": sender, "post_count": cnt} for sender, cnt in top_senders]
-        combined_stats["total_characters"] = total_chars
 
-        # Tracking info
-        try:
-            tracker = get_tracker()
-            combined_stats["tracking"] = tracker.get_stats()
-        except Exception:
-            pass
+        # Tracking stats
+        tracker = get_tracker()
+        tracking = tracker.get_stats()
 
-        import json
-        msg = json.dumps(combined_stats, indent=2, ensure_ascii=False, default=str)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
+        # ── Message 1: Summary ──
+        def fmt_dist(d):
+            return "  ".join(f"{k}:{v}" for k, v in sorted(d.items()) if v > 0)
+
+        lines = ["📊 Fursearch Admin Stats\n"]
+        lines.append("── Database ──")
+        lines.append(f"Characters: {len(all_characters):,} unique | Posts: {len(all_posts):,} unique")
+        lines.append(f"Posts/character: {fmt_dist(posts_per_char_dist)}")
+        lines.append(f"Segments/post:   {fmt_dist(segs_per_post_dist)}")
+
+        lines.append("\n── Queries (all time) ──")
+        lines.append(f"Total: {tracking['total_requests']:,} | Unique users: {tracking['unique_users']:,}")
+        avg_ms = tracking['avg_processing_time_ms']
+        lines.append(f"Hit rate: {tracking['hit_rate']} | Avg time: {avg_ms if avg_ms else 'N/A'}ms")
+        lines.append(f"Total segments found: {tracking['total_segments_found']:,}")
+
+        if tracking.get("per_dataset"):
+            lines.append("\nPer dataset:")
+            for ds, ds_stats in sorted(tracking["per_dataset"].items()):
+                lines.append(
+                    f"  {ds:<12} hits={ds_stats['total_matches']:,}"
+                    f"  hit_rate={ds_stats['hit_rate']}"
+                    f"  top1={ds_stats['top1_rate']}"
+                )
+
+        lines.append("\n── Feedback ──")
+        tf = tracking['total_feedback']
+        cf = tracking['correct_feedback']
+        pct = f" ({cf/tf:.0%})" if tf > 0 else ""
+        lines.append(f"Total: {tf:,} | Correct: {cf:,}{pct}")
+
+        lines.append(f"\n── Top Characters ({Config.DEFAULT_DATASET}) — {total_chars:,} total ──")
+        for char, cnt in top_chars:
+            lines.append(f"  {char}: {cnt} posts")
+
+        lines.append("\n── Top Senders ──")
+        for sender, cnt in top_senders:
+            lines.append(f"  {sender}: {cnt} posts")
+
+        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+
+        # ── Message 2: Daily activity ──
+        DAYS = 30
+        daily_queries = tracker.get_daily_stats(days=DAYS)
+
+        # Per-day submission counts (tgbot uploads), de-duplicated by post_id
+        cutoff = (date.today() - timedelta(days=DAYS)).isoformat()
+        post_earliest_day: dict[str, str] = {}
+        for ident in identifiers:
+            conn = ident.db._connect()
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT post_id, DATE(MIN(created_at)) as day
+                FROM detections
+                WHERE source = 'tgbot' AND DATE(created_at) >= ?
+                GROUP BY post_id
+                """,
+                (cutoff,),
+            )
+            for post_id, day in c.fetchall():
+                if post_id not in post_earliest_day or day < post_earliest_day[post_id]:
+                    post_earliest_day[post_id] = day
+        sub_by_day = Counter(post_earliest_day.values())
+
+        # Merge query days and upload-only days
+        query_by_day = {row["date"]: (row["queries"], row["dau"]) for row in daily_queries}
+        all_days = sorted(set(query_by_day) | set(sub_by_day))
+
+        header = f"📅 Daily Activity (last {DAYS} days)\n\n"
+        header += f"{'Date':<12} {'Queries':>7} {'DAU':>5} {'Uploads':>7}\n"
+        header += "─" * 36 + "\n"
+
+        MAX_LEN = 4000
+        chunk = header
+        for d in all_days:
+            queries, dau = query_by_day.get(d, (0, 0))
+            subs = sub_by_day.get(d, 0)
+            line = f"{d:<12} {queries:>7,} {dau:>5,} {subs:>7,}\n"
+            if len(chunk) + len(line) > MAX_LEN:
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+                chunk = line
+            else:
+                chunk += line
+        if chunk.strip():
+            await context.bot.send_message(chat_id=chat_id, text=chunk)
 
     except Exception as e:
         traceback.print_exc()
