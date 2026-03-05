@@ -63,7 +63,7 @@ def _get_submission_character_url(post_id: str) -> Optional[str]:
             if meta and meta.get("character_url"):
                 return meta["character_url"]
     except Exception:
-        pass
+        traceback.print_exc()
     return None
 
 
@@ -1015,6 +1015,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         photo=media[0].media, caption=media[0].caption,
                         parse_mode=media[0].parse_mode)
             except Exception:
+                traceback.print_exc()
                 for item in media:
                     try:
                         await context.bot.send_photo(
@@ -1022,7 +1023,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             photo=item.media, caption=item.caption,
                             parse_mode=item.parse_mode)
                     except Exception:
-                        continue
+                        traceback.print_exc()
     except Exception as e:
         traceback.print_exc()
         await context.bot.send_message(
