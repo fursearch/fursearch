@@ -368,7 +368,7 @@ class FursuitIdentifier:
 
 def merge_multi_dataset_results(
     all_results: list[list[SegmentResults]],
-    top_k: int = 5,
+    top_k: int = Config.DEFAULT_TOP_K,
     strategy: Optional[MergeStrategy] = None,
 ) -> list[SegmentResults]:
     """Merge SegmentResults from multiple datasets using the given strategy."""
@@ -380,7 +380,7 @@ def merge_with_preferred(
     dataset_names: list[str],
     preferred_datasets: set[str],
     num_preferred: int,
-    top_k: int = 5,
+    top_k: int = Config.DEFAULT_TOP_K,
     strategy: Optional[MergeStrategy] = None,
 ) -> list[SegmentResults]:
     """Merge results, reserving the first num_preferred slots for preferred_datasets.
@@ -436,7 +436,6 @@ def detect_embedder(db_path: str, default: str = Config.DEFAULT_EMBEDDER):
 
 def build_embedder_for_name(short_name: str, device: Optional[str] = None):
     """Instantiate an embedder from its short name (e.g. 'siglip', 'dv2b', 'clip')."""
-    from sam3_fursearch.pipeline.processor import SHORT_NAME_TO_CLI
 
     cli_name = SHORT_NAME_TO_CLI.get(short_name, short_name)
     if cli_name in ("siglip", "google/siglip-base-patch16-224"):
