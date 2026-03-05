@@ -506,7 +506,8 @@ ingestor = FursuitIngestor(device="cuda")  # or "cpu", "mps"
 MIT
 
 ## TODO:
-- [ ] Create a periodic schedule job to download and ingest new images from public sources
+- [ ] Edit mode for submitted images
+- [ ] Reply with "link_to_character (tg)" with a separate telegram link if the user has submitted it, thus allowing to check the fursuit image on furtrack and not on telegram
 - [ ] I noticed that the submitted tgbot images do not come into effect until the bot is restarted
 - [ ] Write the data to the metadata table on ingestion. Move the uploaded_by column to the metadata too. Then get_source_image_url and _get_page_url can entirely be implemented in the database.py
 - [ ] Deprioritize low quality segments (small bbox compared to other fursuits, low confidence, low res, unusual aspect crop for the prompt etc)
