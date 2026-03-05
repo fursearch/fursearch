@@ -1,4 +1,5 @@
 import os
+import threading
 
 import faiss
 import numpy as np
@@ -20,6 +21,7 @@ class VectorIndex:
         self.hnsw_m = hnsw_m
         self.ef_construction = ef_construction
         self.ef_search = ef_search
+        self._lock = threading.Lock()
         self.index = self._load_or_create_index()
         # Update embedding_dim from loaded index (may differ from constructor default)
         self.embedding_dim = self.index.d
@@ -38,9 +40,10 @@ class VectorIndex:
         if embeddings.ndim == 1:
             embeddings = embeddings.reshape(1, -1)
         embeddings = embeddings.astype(np.float32)
-        start_id = self.index.ntotal
-        self.index.add(embeddings)
-        return start_id
+        with self._lock:
+            start_id = self.index.ntotal
+            self.index.add(embeddings)
+            return start_id
 
     def search(self, query: np.ndarray, top_k: int = Config.DEFAULT_TOP_K) -> tuple[np.ndarray, np.ndarray]:
         if query.ndim == 1:
@@ -49,13 +52,14 @@ class VectorIndex:
         return self.index.search(query, top_k)
 
     def save(self, backup: bool = False):
-        if backup and os.path.exists(self.index_path):
-            backup_path = f"{self.index_path}.bak"
-            try:
-                os.replace(self.index_path, backup_path)
-            except OSError:
-                pass  # Backup failed, continue with save
-        faiss.write_index(self.index, self.index_path)
+        with self._lock:
+            if backup and os.path.exists(self.index_path):
+                backup_path = f"{self.index_path}.bak"
+                try:
+                    os.replace(self.index_path, backup_path)
+                except OSError:
+                    pass  # Backup failed, continue with save
+            faiss.write_index(self.index, self.index_path)
 
     @property
     def size(self) -> int:
