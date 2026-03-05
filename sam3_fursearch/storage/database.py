@@ -1,3 +1,4 @@
+import atexit
 import math
 import os
 import sys
@@ -146,7 +147,10 @@ class Database:
     def __init__(self, db_path: str = Config.DB_PATH):
         self.db_path = db_path
         self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
         self._init_database()
+        atexit.register(self.close_all)
         print(f"DB initialized: {db_path}", file=sys.stderr)
 
     def _connect(self) -> sqlite3.Connection:
@@ -155,6 +159,8 @@ class Database:
             conn = sqlite3.connect(self.db_path, timeout=self._TIMEOUT)
             conn.execute(f"PRAGMA busy_timeout = {self._BUSY_TIMEOUT_MS}")
             self._local.conn = conn
+            with self._connections_lock:
+                self._connections.append(conn)
         return conn
 
     def close(self):
@@ -162,6 +168,15 @@ class Database:
         if conn is not None:
             conn.close()
             self._local.conn = None
+
+    def close_all(self):
+        with self._connections_lock:
+            for conn in self._connections:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._connections.clear()
 
     def _init_database(self):
         conn = self._connect()
