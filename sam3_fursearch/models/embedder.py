@@ -6,10 +6,14 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModel
 
 from sam3_fursearch.config import Config
+from sam3_fursearch.models.shared import SharedInstance
 
 
-class DINOv2Embedder:
+class DINOv2Embedder(SharedInstance):
     def __init__(self, device: Optional[str] = None, model_name: str = Config.DINOV2_MODEL):
+        if self._initialized:
+            return
+        self._initialized = True
         self.device = device or Config.get_device()
         self.model_name = model_name
         self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
@@ -26,8 +30,11 @@ class DINOv2Embedder:
         return embedding.cpu().numpy().flatten()
 
 
-class CLIPEmbedder:
+class CLIPEmbedder(SharedInstance):
     def __init__(self, device: Optional[str] = None, model_name: str = Config.CLIP_MODEL):
+        if self._initialized:
+            return
+        self._initialized = True
         from transformers import CLIPModel, CLIPProcessor
 
         self.device = device or Config.get_device()
@@ -59,8 +66,12 @@ class CLIPEmbedder:
             features = projected / projected.norm(dim=-1, keepdim=True)
         return features.cpu().numpy().flatten().astype(np.float32)
 
-class SigLIPEmbedder:
+
+class SigLIPEmbedder(SharedInstance):
     def __init__(self, device: Optional[str] = None, model_name: str = Config.SIGLIP_MODEL):
+        if self._initialized:
+            return
+        self._initialized = True
         self.device = device or Config.get_device()
         self.model_name = model_name
         self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
@@ -113,10 +124,13 @@ class SigLIPEmbedder:
         return 1.0 / (1.0 + math.exp(-max(-50.0, min(50.0, logit))))
 
 
-class ColorHistogramEmbedder:
+class ColorHistogramEmbedder(SharedInstance):
     """Wraps any embedder and appends a normalized HSV color histogram."""
 
     def __init__(self, base_embedder, bins: int = Config.COLOR_HIST_BINS):
+        if self._initialized:
+            return
+        self._initialized = True
         self.base_embedder = base_embedder
         self.bins = bins
         self.model_name = f"{base_embedder.model_name}+colorhist"

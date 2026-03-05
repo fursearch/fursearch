@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 
 from sam3_fursearch.config import Config
+from sam3_fursearch.models.shared import SharedInstance
 
 
 def mask_to_bbox(mask: np.ndarray | None) -> tuple[int, int, int, int] | None:
@@ -55,9 +56,12 @@ class SegmentationResult:
             segmentor=segmentor,
         )
 
-class FullImageSegmentor:
+class FullImageSegmentor(SharedInstance):
     """A fallback segmentor that returns the full image as a single segment."""
     def __init__(self) -> None:
+        if self._initialized:
+            return
+        self._initialized = True
         self.model_name = "full"
 
     def segment(self, image: Image.Image, confidence: float = 1.0) -> list[SegmentationResult]:
@@ -73,7 +77,7 @@ class FullImageSegmentor:
             segmentor=self.model_name,
         )]
 
-class SAM3FursuitSegmentor:
+class SAM3FursuitSegmentor(SharedInstance):
 
     def __init__(
         self,
@@ -83,6 +87,9 @@ class SAM3FursuitSegmentor:
         max_detections: int = Config.MAX_DETECTIONS,
         concept: Optional[str] = Config.DEFAULT_CONCEPT,
     ):
+        if self._initialized:
+            return
+        self._initialized = True
         self.device = device or Config.get_segmentor_device()
         self.confidence_threshold = confidence_threshold
         self.max_detections = max_detections
