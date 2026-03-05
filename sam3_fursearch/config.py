@@ -60,7 +60,7 @@ class Config:
 
     # Detection
     DETECTION_CONFIDENCE = 0.5
-    MAX_DETECTIONS = 10
+    MAX_DETECTIONS = int(os.environ.get("MAX_DETECTIONS", 10))
     DEFAULT_CONCEPT = "fursuiter head"
     MIN_SEGMENT_SIZE = 70  # Minimum bbox dimension (width or height) in pixels
     MIN_SEGMENT_RATIO = 1 / 7  # Minimum ratio of segment area to average segment area
@@ -82,8 +82,9 @@ class Config:
     TGBOT_MAX_RESULTS = 5
     FAISS_MAX_DISTANCE = 0.7  # Max distance for FAISS matches (to filter out unrelated embeddings)
     DEFAULT_MIN_CONFIDENCE = 0.6  # 60% minimum confidence for displaying results
-    # Merge strategy: "confidence", "rrf", or "avg_embedding"
-    MERGE_STRATEGY = "avg_embedding"
+    # Strategy names — must match keys in _SEARCH_STRATEGIES / _MERGE_STRATEGIES (identifier.py)
+    SEARCH_STRATEGY = os.environ.get("SEARCH_STRATEGY", "avg_embedding")
+    MERGE_STRATEGY = os.environ.get("MERGE_STRATEGY", "confidence")
     # Preferred datasets: comma-separated dataset names that get priority slots in results
     PREFERRED_DATASETS = ""  # e.g. "fursearch,nfc26" — overridden by PREFERRED_DATASETS env var
     NUM_PREFERRED_RESULTS = 2  # How many top slots are reserved for preferred datasets

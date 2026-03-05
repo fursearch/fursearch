@@ -3,6 +3,8 @@ tests/**/*.jpg
 tests/*.jpeg
 tests/**/*.jpeg
 
+logs
+
 # Python
 __pycache__/
 *.pyc
