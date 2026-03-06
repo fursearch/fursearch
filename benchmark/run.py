@@ -37,27 +37,33 @@ DATASET_DB = {
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_posts(db_path: Path, index_path: Path, character: str) -> dict[str, dict]:
-    """Load all embeddings for a character from a dataset.
+def load_posts(db_path: Path, index_path: Path, character: str | None) -> dict[str, dict]:
+    """Load all embeddings for a character (or all characters if None) from a dataset.
 
     Returns {post_id: {centroid, embeddings, source, segmentor_models}}.
     """
     if not db_path.exists() or not index_path.exists():
         return {}
     conn = sqlite3.connect(str(db_path))
-    rows = conn.execute(
-        "SELECT post_id, embedding_id, source, segmentor_model "
-        "FROM detections WHERE character_name = ? ORDER BY post_id",
-        (character,),
-    ).fetchall()
+    if character is None:
+        rows = conn.execute(
+            "SELECT post_id, embedding_id, source, segmentor_model, character_name "
+            "FROM detections WHERE character_name IS NOT NULL ORDER BY post_id",
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT post_id, embedding_id, source, segmentor_model, ? "
+            "FROM detections WHERE character_name = ? ORDER BY post_id",
+            (character, character),
+        ).fetchall()
     conn.close()
     if not rows:
         return {}
     index = faiss.read_index(str(index_path))
     posts: dict[str, dict] = {}
-    for post_id, emb_id, source, seg_model in rows:
+    for post_id, emb_id, source, seg_model, char_name in rows:
         if post_id not in posts:
-            posts[post_id] = {"embeddings": [], "source": source, "segmentor_models": []}
+            posts[post_id] = {"embeddings": [], "source": source, "segmentor_models": [], "character_name": char_name}
         posts[post_id]["embeddings"].append(index.reconstruct(int(emb_id)).astype(np.float32))
         posts[post_id]["segmentor_models"].append(seg_model)
     for v in posts.values():
@@ -126,6 +132,63 @@ def load_cross_dataset_anchors(
 
 def sq_dist(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sum((a - b) ** 2))
+
+
+def sam3_quantiles(posts: dict) -> dict | None:
+    """Pairwise squared-L2 distance quantiles across all sam3 embeddings in posts."""
+    embs = [
+        emb
+        for pdata in posts.values()
+        for emb, seg in zip(pdata["embeddings"], pdata["segmentor_models"])
+        if seg == "sam3"
+    ]
+    if len(embs) < 2:
+        return None
+    dists = np.array([
+        sq_dist(embs[i], embs[j])
+        for i in range(len(embs))
+        for j in range(i + 1, len(embs))
+    ])
+    return {
+        "n_embeddings": len(embs),
+        "n_pairs": len(dists),
+        "p10": float(np.percentile(dists, 10)),
+        "p25": float(np.percentile(dists, 25)),
+        "p50": float(np.percentile(dists, 50)),
+        "p75": float(np.percentile(dists, 75)),
+        "p90": float(np.percentile(dists, 90)),
+        "max": float(np.max(dists)),
+    }
+
+
+def intrachar_medians(posts: dict) -> list[float]:
+    """Per-character median sam3 pairwise distance for every character in posts."""
+    char_groups: dict[str, list] = {}
+    for pdata in posts.values():
+        cname = pdata.get("character_name") or ""
+        if cname:
+            char_groups.setdefault(cname, []).append(pdata)
+    medians = []
+    for char_posts in char_groups.values():
+        q = sam3_quantiles({i: p for i, p in enumerate(char_posts)})
+        if q is not None:
+            medians.append(q["p50"])
+    return medians
+
+
+def intrachar_stats(medians: list[float]) -> dict | None:
+    """Distribution of per-character median intra-distances."""
+    if len(medians) < 2:
+        return None
+    arr = np.array(medians)
+    return {
+        "n_chars": len(medians),
+        "p10": float(np.percentile(arr, 10)),
+        "p25": float(np.percentile(arr, 25)),
+        "p50": float(np.percentile(arr, 50)),
+        "p75": float(np.percentile(arr, 75)),
+        "p90": float(np.percentile(arr, 90)),
+    }
 
 
 def kmeans_pp(data: np.ndarray, k: int, seed: int = 42, n_iter: int = 300) -> np.ndarray:
@@ -316,6 +379,8 @@ def run_test_case(tc: dict, strategies: list[dict], explore: bool = False) -> di
             ),
         }
 
+    sam3_emb_quantiles = sam3_quantiles(primary_posts)
+
     if explore or not ground_truth:
         return {
             "id": tc["id"],
@@ -324,6 +389,7 @@ def run_test_case(tc: dict, strategies: list[dict], explore: bool = False) -> di
             "num_posts": len(primary_posts),
             "num_posts_with_gt": len([p for p in primary_posts if p in ground_truth]),
             "cluster_quality": cluster_quality,
+            "sam3_emb_quantiles": sam3_emb_quantiles,
             "strategies": {},
         }
 
@@ -395,6 +461,11 @@ def print_case_result(case_result: dict, best_strategies: dict | None = None) ->
         print(f"    separation_ratio={sep_str}  theoretical_max={theo_str}")
         if sep is not None and sep < 1.0:
             print(f"    ⚠  Clusters overlap (ratio<1) — geometry-based strategies have a ceiling")
+
+    q = case_result.get("sam3_emb_quantiles")
+    if q:
+        print(f"    sam3 pairwise dists  ('{char}')  n={q['n_embeddings']} embs  {q['n_pairs']} pairs")
+        print(f"      p10={q['p10']:.3f}  p25={q['p25']:.3f}  p50={q['p50']:.3f}  p75={q['p75']:.3f}  p90={q['p90']:.3f}  max={q['max']:.3f}")
 
     strats = case_result.get("strategies", {})
     if not strats:
@@ -472,6 +543,33 @@ def main() -> None:
         result = run_test_case(tc, strategies, explore=args.explore)
         run_record["cases"][tc["id"]] = result
         print_case_result(result, best_by_case_strategy.get(tc["id"]))
+
+    # Dataset-wide intra-character sam3 stats (explore mode only)
+    if args.explore:
+        print("\n── Dataset-wide intra-character sam3 distance stats ──")
+        col = f"  {'dataset':<14}  {'chars':>6}  p10    p25    p50    p75    p90"
+        print(col)
+        print(f"  {'-' * (len(col) - 2)}")
+        merged_medians: list[float] = []
+        for ds_name, (db_path, index_path) in sorted(DATASET_DB.items()):
+            all_posts = load_posts(db_path, index_path, None)
+            medians = intrachar_medians(all_posts)
+            merged_medians.extend(medians)
+            stats = intrachar_stats(medians)
+            if stats:
+                print(
+                    f"  {ds_name:<14}  {stats['n_chars']:>6}"
+                    f"  {stats['p10']:.3f}  {stats['p25']:.3f}  {stats['p50']:.3f}"
+                    f"  {stats['p75']:.3f}  {stats['p90']:.3f}"
+                )
+        merged = intrachar_stats(merged_medians)
+        if merged:
+            print(f"  {'-' * (len(col) - 2)}")
+            print(
+                f"  {'[merged]':<14}  {merged['n_chars']:>6}"
+                f"  {merged['p10']:.3f}  {merged['p25']:.3f}  {merged['p50']:.3f}"
+                f"  {merged['p75']:.3f}  {merged['p90']:.3f}"
+            )
 
     # Overall summary
     all_accs = [
