@@ -1,0 +1,81 @@
+# Fursuit identification benchmark configuration
+# Run: python benchmark/run.py
+# App: streamlit run benchmark/app.py
+
+# ── Strategies to evaluate ────────────────────────────────────────────────────
+# Add new entries here when you add new strategy types to run.py.
+strategies:
+  - id: avg_all
+    label: "Current (avg all same-name embeddings)"
+    type: avg_all
+
+  - id: nearest_centroid
+    label: "Nearest post centroid"
+    type: nearest_centroid
+
+  - id: subcluster_026
+    label: "A: subcluster (d≤0.26)"
+    type: nearest_subcluster
+    params:
+      threshold: 0.26
+
+  - id: subcluster_035
+    label: "A: subcluster (d≤0.35)"
+    type: nearest_subcluster
+    params:
+      threshold: 0.35
+
+  - id: kmeans_auto
+    label: "B: k-means (k=num_clusters)"
+    type: kmeans
+    params:
+      k: null   # null → use test case num_clusters
+
+  - id: anchor_furtrack
+    label: "C: furtrack anchor (d≤0.35)"
+    type: anchor_filter
+    params:
+      anchor_dataset: furtrack
+      threshold: 0.35
+
+# ── Test cases ────────────────────────────────────────────────────────────────
+# Each test case is one name-collision scenario.
+# ground_truth maps post_id (from primary_dataset) → integer fursuiter identity.
+# Leave ground_truth empty ({}) to run in explore mode only.
+#
+# cross_dataset lets you supply extra signal from other datasets:
+#   known_posts: post_ids from that dataset known to belong to a specific cluster
+#   aliases: character names in that dataset that entirely map to a cluster
+#
+# Cross-dataset data is NOT used as LOO test queries — only as anchors /
+# extra embeddings when a strategy requests them.
+
+test_cases:
+  - id: maple_nfc
+    description: "4 distinct fursuiters named 'maple' across nfc25 + nfc26"
+    character: maple
+    primary_dataset: nfc
+    num_clusters: 4
+    ground_truth:
+      "01771687-fa4b-48b6-80ab-8f3387166a76": 1   # western wolf
+      "2397126f-c47d-4d6e-b77c-0dcfa9047769": 2   # white kemono with antlers (mirror)
+      "018a2f05-a2c2-41e0-863f-2ba2d21d09af": 3   # kemono in forest
+      "c5b60f4d-d296-4677-ac57-5c44d39209c1": 4   # western coyote (hotel, yellow lights)
+      "fca00799-7701-41be-b993-d3073134f6b1": 2   # white kemono without antlers (upside down)
+    cross_dataset:
+      furtrack:
+        known_posts:
+          "1640420": 4   # furtrack 'maple' post closest to nfc26 coyote
+        aliases: {}      # e.g. {4: ["maple_(coyote)"]} — all posts for that name = cluster 4
+      barq:
+        known_posts: {}
+        aliases: {}
+
+  # Template for adding new test cases:
+  # - id: my_character_dataset
+  #   description: "Brief description"
+  #   character: character_name
+  #   primary_dataset: nfc   # or furtrack, barq, fursearch
+  #   num_clusters: 3
+  #   ground_truth: {}       # fill after explore mode
+  #   cross_dataset: {}

@@ -162,26 +162,6 @@ fursearch -ds validation add -c "CharName" -s manual img1.jpg
 fursearch -ds validation stats
 ```
 
-### Validation workflow
-
-Build a validation set and evaluate model accuracy:
-
-```bash
-# 1. Download validation images (auto-excludes main dataset, outputs to datasets/validation/nfc25/)
-fursearch -ds validation download nfc25 -c "CharName" -m 5
-fursearch -ds validation download nfc25 --all -m 2
-
-# 2. Evaluate validation set against main dataset
-fursearch evaluate
-fursearch evaluate --from validation --against fursearch --top-k 5
-fursearch evaluate --json
-```
-
-The evaluate command outputs:
-- Top-1 and top-k accuracy
-- Breakdown by source, preprocessing config, and character
-- Confidence calibration (accuracy per confidence bucket)
-
 ### Combine datasets
 
 Merge multiple datasets into a single target dataset (non-destructive, source datasets unchanged):
@@ -506,7 +486,9 @@ ingestor = FursuitIngestor(device="cuda")  # or "cpu", "mps"
 MIT
 
 ## TODO:
-- [ ] Edit mode for submitted images
+- [ ] /edit mode for submitted tags, with message links (or replies) as command arguments
+- [ ] user-driven Feedback with thumbs up emoji to mark good detections. Will help define ground truth for future detection improvements.
+- [ ] Parse and bias most recent events more preferentially
 - [ ] Reply with "link_to_character (tg)" with a separate telegram link if the user has submitted it, thus allowing to check the fursuit image on furtrack and not on telegram
 - [ ] I noticed that the submitted tgbot images do not come into effect until the bot is restarted
 - [ ] Write the data to the metadata table on ingestion. Move the uploaded_by column to the metadata too. Then get_source_image_url and _get_page_url can entirely be implemented in the database.py

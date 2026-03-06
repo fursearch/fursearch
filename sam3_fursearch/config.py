@@ -80,7 +80,7 @@ class Config:
     MAX_EXAMPLES = 10
     DEFAULT_TOP_K = 5
     TGBOT_MAX_RESULTS = 5
-    FAISS_MAX_DISTANCE = 0.7  # Max distance for FAISS matches (to filter out unrelated embeddings)
+    FAISS_MAX_DISTANCE = 0.26  # Max distance for FAISS matches (to filter out unrelated embeddings)
     DEFAULT_MIN_CONFIDENCE = 0.6  # 60% minimum confidence for displaying results
     # Strategy names — must match keys in _SEARCH_STRATEGIES / _MERGE_STRATEGIES (identifier.py)
     SEARCH_STRATEGY = os.environ.get("SEARCH_STRATEGY", "avg_embedding")

@@ -102,19 +102,14 @@ def main():
         prog="fursearch",
         description="Fursuit character recognition using SAM3 and DINOv2",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
+        epilog="""
 Examples:
   fursearch identify photo.jpg
   fursearch add -c "CharName" -s manual img1.jpg img2.jpg
   fursearch ingest directory --data-dir ./characters/ -s manual
   fursearch download nfc26
   fursearch stats
-
-  # Validation workflow
-  fursearch --dataset validation ingest directory -s manual
-  fursearch evaluate  # --from validation --against {Config.DEFAULT_DATASET}
-        """
-    )
+    """)
     parser.add_argument("--dataset", "-d", "-ds", default=Config.DEFAULT_DATASET,
                         help=f"Dataset name (default: {Config.DEFAULT_DATASET}). Sets db/index paths to <name>.db/<name>.index")
     parser.add_argument("--no-segment", "-S", dest="segment", action="store_false", help="Do not use segmentation")
@@ -217,14 +212,6 @@ Examples:
                                help="Minimum confidence threshold")
     search_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
-    evaluate_parser = subparsers.add_parser("evaluate", help="Evaluate one dataset against another")
-    evaluate_parser.add_argument("--from", dest="from_dataset", default="validation",
-                                  help="Dataset to evaluate (default: validation)")
-    evaluate_parser.add_argument("--against", default=Config.DEFAULT_DATASET,
-                                  help=f"Dataset to query against (default: {Config.DEFAULT_DATASET})")
-    evaluate_parser.add_argument("--top-k", "-k", type=int, default=5, help="Top-k for accuracy calculation")
-    evaluate_parser.add_argument("--json", action="store_true", help="Output as JSON")
-
     args = parser.parse_args()
 
     # Track whether --dataset was explicitly passed
@@ -256,8 +243,6 @@ Examples:
         download_command(args)
     elif args.command == "search":
         search_command(args)
-    elif args.command == "evaluate":
-        evaluate_command(args)
     elif args.command == "combine":
         combine_command(args)
     elif args.command == "split":
@@ -1109,172 +1094,6 @@ def download_command(args):
     else:
         print(f"Error: Unknown download source '{args.source}'")
         sys.exit(1)
-
-
-def evaluate_command(args):
-    """Evaluate one dataset against another."""
-    import numpy as np
-
-    for ds_name in (args.from_dataset, args.against):
-        if not _dataset_has_db(ds_name):
-            db_path, _ = _get_dataset_paths(ds_name)
-            print(f"Error: Dataset '{ds_name}' not found at {db_path}")
-            sys.exit(1)
-
-    from_db, from_index = _open_dataset(args.from_dataset)
-    against_db, against_index = _open_dataset(args.against)
-
-    if from_index.size == 0:
-        print(f"Error: Dataset '{args.from_dataset}' is empty.")
-        sys.exit(1)
-
-    if against_index.size == 0:
-        print(f"Error: Dataset '{args.against}' is empty.")
-        sys.exit(1)
-
-    if from_index.embedding_dim != against_index.embedding_dim:
-        from_emb = from_db.get_metadata(Config.METADATA_KEY_EMBEDDER) or "unknown"
-        against_emb = against_db.get_metadata(Config.METADATA_KEY_EMBEDDER) or "unknown"
-        print(f"Error: Embedding dimension mismatch: '{args.from_dataset}' is {from_index.embedding_dim}D ({from_emb}), "
-              f"'{args.against}' is {against_index.embedding_dim}D ({against_emb}). "
-              f"Datasets must use the same embedder.")
-        sys.exit(1)
-
-    top_k = args.top_k
-
-    # Get all detections from "from" dataset
-    conn = from_db._connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT embedding_id, character_name, source, preprocessing_info FROM detections ORDER BY embedding_id")
-    from_detections = cursor.fetchall()
-
-    if not from_detections:
-        print(f"Error: No detections in '{args.from_dataset}' database.")
-        sys.exit(1)
-
-    # Evaluate
-    top_1_correct = 0
-    top_k_correct = 0
-    total = 0
-    by_source = {}
-    by_preprocessing = {}
-    by_character = {}
-    confidence_buckets = {i: {"correct": 0, "total": 0} for i in range(10)}
-
-    for emb_id, char_name, source, preproc in from_detections:
-        if emb_id >= from_index.size:
-            continue
-
-        # Reconstruct embedding
-        embedding = np.zeros(from_index.embedding_dim, dtype=np.float32)
-        from_index.index.reconstruct(emb_id, embedding)
-
-        # Query against dataset
-        distances, indices = against_index.search(embedding.reshape(1, -1), top_k)
-
-        # Get predicted characters
-        predictions = []
-        for dist, idx in zip(distances[0], indices[0]):
-            if idx == -1:
-                continue
-            det = against_db.get_detection_by_embedding_id(int(idx))
-            if det:
-                confidence = max(0.0, 1.0 - dist / 2.0)
-                predictions.append((det.character_name, confidence))
-
-        if not predictions:
-            continue
-
-        total += 1
-        top_1_pred, top_1_conf = predictions[0]
-        is_top_1_correct = top_1_pred == char_name
-        is_top_k_correct = any(p[0] == char_name for p in predictions[:top_k])
-
-        if is_top_1_correct:
-            top_1_correct += 1
-        if is_top_k_correct:
-            top_k_correct += 1
-
-        # Confidence calibration
-        bucket = min(9, int(top_1_conf * 10))
-        confidence_buckets[bucket]["total"] += 1
-        if is_top_1_correct:
-            confidence_buckets[bucket]["correct"] += 1
-
-        # By source
-        src_key = source or "unknown"
-        if src_key not in by_source:
-            by_source[src_key] = {"correct": 0, "total": 0, "top_k_correct": 0}
-        by_source[src_key]["total"] += 1
-        if is_top_1_correct:
-            by_source[src_key]["correct"] += 1
-        if is_top_k_correct:
-            by_source[src_key]["top_k_correct"] += 1
-
-        # By preprocessing
-        prep_key = preproc or "unknown"
-        if prep_key not in by_preprocessing:
-            by_preprocessing[prep_key] = {"correct": 0, "total": 0, "top_k_correct": 0}
-        by_preprocessing[prep_key]["total"] += 1
-        if is_top_1_correct:
-            by_preprocessing[prep_key]["correct"] += 1
-        if is_top_k_correct:
-            by_preprocessing[prep_key]["top_k_correct"] += 1
-
-        # By character
-        if char_name not in by_character:
-            by_character[char_name] = {"correct": 0, "total": 0, "top_k_correct": 0}
-        by_character[char_name]["total"] += 1
-        if is_top_1_correct:
-            by_character[char_name]["correct"] += 1
-        if is_top_k_correct:
-            by_character[char_name]["top_k_correct"] += 1
-
-    if total == 0:
-        print("Error: No valid samples to evaluate.")
-        sys.exit(1)
-
-    top_1_acc = top_1_correct / total
-    top_k_acc = top_k_correct / total
-
-    results = {
-        "from_dataset": args.from_dataset,
-        "against_dataset": args.against,
-        "total_samples": total,
-        "top_1_accuracy": top_1_acc,
-        f"top_{top_k}_accuracy": top_k_acc,
-        "k_value": top_k,
-        "by_source": {k: {"count": v["total"], "top_1_accuracy": v["correct"] / v["total"], f"top_{top_k}_accuracy": v["top_k_correct"] / v["total"]} for k, v in by_source.items()},
-        "by_preprocessing": {k: {"count": v["total"], "top_1_accuracy": v["correct"] / v["total"], f"top_{top_k}_accuracy": v["top_k_correct"] / v["total"]} for k, v in by_preprocessing.items()},
-        "by_character": {k: {"count": v["total"], "top_1_accuracy": v["correct"] / v["total"], f"top_{top_k}_accuracy": v["top_k_correct"] / v["total"]} for k, v in by_character.items()},
-        "confidence_calibration": [{"range": f"{i*10}-{(i+1)*10}%", "count": v["total"], "accuracy": v["correct"] / v["total"] if v["total"] > 0 else 0} for i, v in confidence_buckets.items()],
-    }
-
-    if args.json:
-        print(json.dumps(results, indent=2))
-    else:
-        print(f"\nEvaluation: {args.from_dataset} → {args.against}")
-        print("=" * 50)
-        print(f"Total samples: {total}")
-        print(f"Top-1 accuracy: {top_1_acc:.1%}")
-        print(f"Top-{top_k} accuracy: {top_k_acc:.1%}")
-
-        if by_source:
-            print(f"\nBy Source:")
-            for src, metrics in sorted(by_source.items(), key=lambda x: -x[1]["total"]):
-                acc = metrics["correct"] / metrics["total"]
-                print(f"  {src}: {acc:.1%} (n={metrics['total']})")
-
-        if by_preprocessing:
-            print(f"\nBy Preprocessing:")
-            for prep, metrics in sorted(by_preprocessing.items(), key=lambda x: -x[1]["total"]):
-                acc = metrics["correct"] / metrics["total"]
-                print(f"  {prep}: {acc:.1%} (n={metrics['total']})")
-
-        print(f"\nConfidence Calibration:")
-        for bucket in results["confidence_calibration"]:
-            if bucket["count"] > 0:
-                print(f"  {bucket['range']}: {bucket['accuracy']:.1%} accurate (n={bucket['count']})")
 
 
 def _dataset_has_db(dataset: str) -> bool:

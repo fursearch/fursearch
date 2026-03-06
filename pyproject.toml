@@ -18,6 +18,8 @@ dependencies = [
     "dotenv>=0.9.9",
     "pytest>=9.0.2",
     "tenacity>=9.1.4",
+    "streamlit>=1.55.0",
+    "plotly>=6.6.0",
 ]
 
 [project.scripts]

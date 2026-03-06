@@ -3,6 +3,8 @@ tests/**/*.jpg
 tests/*.jpeg
 tests/**/*.jpeg
 
+benchmark/results/
+
 logs
 
 # Python
