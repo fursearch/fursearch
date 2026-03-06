@@ -73,6 +73,105 @@ def load_character_posts(dataset: str, character: str) -> list[dict]:
 
 
 @st.cache_data(ttl=300)
+def load_all_posts(dataset: str, limit: int = 500) -> list[dict]:
+    """Load a random sample of posts across all characters from a dataset."""
+    db_path = BASE / f"{dataset}.db"
+    index_path = BASE / f"{dataset}.index"
+    if not db_path.exists() or not index_path.exists():
+        return []
+    conn = sqlite3.connect(str(db_path))
+    post_rows = conn.execute(
+        "SELECT DISTINCT post_id, source, character_name FROM detections "
+        "WHERE character_name IS NOT NULL ORDER BY RANDOM() LIMIT ?",
+        (limit,),
+    ).fetchall()
+    if not post_rows:
+        conn.close()
+        return []
+    post_ids = [r[0] for r in post_rows]
+    post_meta = {r[0]: (r[1], r[2]) for r in post_rows}
+    placeholders = ",".join("?" * len(post_ids))
+    emb_rows = conn.execute(
+        f"SELECT post_id, embedding_id FROM detections WHERE post_id IN ({placeholders})",
+        post_ids,
+    ).fetchall()
+    conn.close()
+    index = faiss.read_index(str(index_path))
+    posts_dict: dict[str, dict] = {}
+    for post_id, emb_id in emb_rows:
+        source, char_name = post_meta[post_id]
+        if post_id not in posts_dict:
+            posts_dict[post_id] = {
+                "post_id": post_id,
+                "dataset": dataset,
+                "source": source,
+                "character": char_name,
+                "embeddings": [],
+            }
+        posts_dict[post_id]["embeddings"].append(
+            index.reconstruct(int(emb_id)).astype(np.float32)
+        )
+    for v in posts_dict.values():
+        v["centroid"] = np.mean(v["embeddings"], axis=0).tolist()
+        v["num_embeddings"] = len(v["embeddings"])
+    return list(posts_dict.values())
+
+
+def search_nearest_posts(
+    query_emb: np.ndarray, dataset_names: list[str], limit: int = 500
+) -> list[dict]:
+    """Search FAISS indices for posts nearest to query_emb across multiple datasets."""
+    all_posts: list[dict] = []
+    for ds in dataset_names:
+        db_path = BASE / f"{ds}.db"
+        index_path = BASE / f"{ds}.index"
+        if not db_path.exists() or not index_path.exists():
+            continue
+        index = faiss.read_index(str(index_path))
+        if index.ntotal == 0:
+            continue
+        if hasattr(index, "hnsw"):
+            index.hnsw.efSearch = limit
+        k = min(limit, index.ntotal)
+        D, I = index.search(query_emb.reshape(1, -1).astype(np.float32), k)
+        id_to_dist = {int(i): float(d) for i, d in zip(I[0], D[0]) if i >= 0}
+        if not id_to_dist:
+            continue
+        emb_ids = list(id_to_dist.keys())
+        conn = sqlite3.connect(str(db_path))
+        placeholders = ",".join("?" * len(emb_ids))
+        rows = conn.execute(
+            f"SELECT post_id, embedding_id, source, character_name FROM detections "
+            f"WHERE embedding_id IN ({placeholders})",
+            emb_ids,
+        ).fetchall()
+        conn.close()
+        posts_dict: dict[str, dict] = {}
+        for post_id, emb_id, source, char_name in rows:
+            if post_id not in posts_dict:
+                posts_dict[post_id] = {
+                    "post_id": post_id,
+                    "dataset": ds,
+                    "source": source,
+                    "character": char_name or "unknown",
+                    "embeddings": [],
+                    "min_dist": float("inf"),
+                }
+            posts_dict[post_id]["embeddings"].append(
+                index.reconstruct(int(emb_id)).astype(np.float32)
+            )
+            posts_dict[post_id]["min_dist"] = min(
+                posts_dict[post_id]["min_dist"], id_to_dist.get(int(emb_id), float("inf"))
+            )
+        for v in posts_dict.values():
+            v["centroid"] = np.mean(v["embeddings"], axis=0).tolist()
+            v["num_embeddings"] = len(v["embeddings"])
+        all_posts.extend(posts_dict.values())
+    all_posts.sort(key=lambda p: p["min_dist"])
+    return all_posts[:limit]
+
+
+@st.cache_data(ttl=300)
 def get_all_characters(dataset: str) -> list[str]:
     db_path = BASE / f"{dataset}.db"
     if not db_path.exists():
@@ -95,21 +194,33 @@ def pca_2d(vectors: np.ndarray) -> np.ndarray:
     return (X @ Vt[:2].T).astype(float)
 
 
-def image_url(post_id: str, source: str, dataset: str) -> str | None:
-    direct = get_source_image_url(source, post_id)
-    if direct:
-        return direct
-    if source == "furtrack" or dataset == "furtrack":
-        return f"https://furtrack.com/p/{post_id}"  # page link, not image
+def find_local_image(post_id: str, source: str, dataset: str) -> Path | None:
+    """Return the local file path for a post image, if it exists."""
+    # fursearch: tg_download/{post_id}.jpg
+    if dataset == "fursearch" or source == "tgbot":
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            p = BASE / "datasets" / "fursearch" / "tg_download" / f"{post_id}{ext}"
+            if p.exists():
+                return p
     return None
 
 
-def thumbnail_html(url: str | None, post_id: str, width: int = 200) -> str:
-    if url and url.startswith("http") and not "furtrack.com/p/" in url:
-        return f'<img src="{url}" width="{width}" style="border-radius:6px"/>'
+
+def render_image(post_id: str, source: str, dataset: str, width: int = 200) -> None:
+    """Render a post image using st.image (local file or URL) or a fallback caption."""
+    local = find_local_image(post_id, source, dataset)
+    if local:
+        st.image(str(local), width=width)
+        return
+    url = get_source_image_url(source, post_id)
     if url:
-        return f'<a href="{url}" target="_blank">{post_id[:12]}</a>'
-    return f'<span style="color:#888">{post_id[:12]}</span>'
+        st.image(url, width=width)
+        return
+    # furtrack: just show a link
+    if source == "furtrack" or dataset == "furtrack":
+        st.markdown(f"[furtrack.com/p/{post_id}](https://furtrack.com/p/{post_id})", unsafe_allow_html=False)
+        return
+    st.caption(f"no image · `{post_id[:14]}`")
 
 
 def load_config() -> dict:
@@ -134,32 +245,169 @@ def load_results() -> list[dict]:
 
 # ── Explorer tab ──────────────────────────────────────────────────────────────
 
+def _tab_explorer_upload(uploaded, dataset_names: list[str], limit: int) -> None:
+    """Render the upload-image vicinity explorer."""
+    import hashlib
+    from collections import Counter
+    from PIL import Image as PILImage
+
+    file_bytes = uploaded.read()
+    file_hash = hashlib.md5(file_bytes).hexdigest()[:8]
+    uploaded.seek(0)
+    img = PILImage.open(uploaded)
+
+    col_img, col_btn = st.columns([1, 3])
+    with col_img:
+        st.image(img, width=200)
+
+    cache_key = f"upload_vicinity_{file_hash}"
+    if cache_key not in st.session_state:
+        with col_btn:
+            if not st.button("Embed & search vicinity (loads SigLIP)", key="embed_btn"):
+                return
+        with st.spinner("Loading SigLIP and embedding image…"):
+            try:
+                from sam3_fursearch.models.embedder import SigLIPEmbedder
+                embedder = SigLIPEmbedder()
+                query_emb = embedder.embed(img)
+            except Exception as e:
+                st.error(f"Embedding failed: {e}")
+                return
+        with st.spinner(f"Searching {limit} nearest posts…"):
+            posts = search_nearest_posts(query_emb, dataset_names, limit=limit)
+        st.session_state[cache_key] = {"emb": query_emb, "posts": posts}
+        st.rerun()
+
+    state = st.session_state[cache_key]
+    query_emb: np.ndarray = state["emb"]
+    posts: list[dict] = state["posts"]
+
+    if not posts:
+        st.warning("No nearby posts found.")
+        return
+
+    centroids = np.array([p["centroid"] for p in posts])
+    all_vecs = np.vstack([centroids, query_emb.reshape(1, -1)])
+    coords = pca_2d(all_vecs)
+    query_coord = coords[-1]
+    post_coords = coords[:-1]
+
+    import pandas as pd
+    char_counts = Counter(p["character"] for p in posts)
+    top_chars = {c for c, _ in char_counts.most_common(20)}
+
+    df_rows = []
+    for i, p in enumerate(posts):
+        char = p["character"]
+        df_rows.append({
+            "post_id": p["post_id"],
+            "source": p["source"],
+            "dataset": p["dataset"],
+            "character": char if char in top_chars else "other",
+            "pc1": float(post_coords[i, 0]),
+            "pc2": float(post_coords[i, 1]),
+            "n_emb": p["num_embeddings"],
+            "dist": round(p.get("min_dist", 0.0), 4),
+        })
+    df = pd.DataFrame(df_rows)
+
+    fig = px.scatter(
+        df, x="pc1", y="pc2",
+        color="character",
+        symbol="dataset",
+        custom_data=["post_id", "source", "dataset", "character", "dist", "n_emb"],
+        title=f"Vicinity of uploaded image — {len(posts)} nearest posts",
+        labels={"pc1": "PC1", "pc2": "PC2"},
+        height=550,
+        color_discrete_sequence=px.colors.qualitative.Alphabet,
+    )
+    fig.update_traces(
+        marker_size=10,
+        hovertemplate=(
+            "<b>%{customdata[3]}</b>  [%{customdata[2]}]<br>"
+            "post: %{customdata[0]}<br>"
+            "source: %{customdata[1]}  dist: %{customdata[4]}<br>"
+            "<i>click to view image</i>"
+            "<extra></extra>"
+        ),
+    )
+    fig.add_trace(go.Scatter(
+        x=[float(query_coord[0])], y=[float(query_coord[1])],
+        mode="markers+text",
+        marker=dict(symbol="star", size=22, color="red", line=dict(width=1, color="darkred")),
+        text=["[query]"],
+        textposition="top center",
+        name="★ query",
+        hovertemplate="<b>Uploaded image (query)</b><extra></extra>",
+    ))
+    fig.update_layout(legend_title_text="character / dataset")
+
+    event = st.plotly_chart(fig, on_select="rerun", key="scatter_upload", width="stretch")
+
+    selected_indices = []
+    if event and hasattr(event, "selection") and event.selection:
+        selected_indices = [pt.get("point_index") for pt in event.selection.get("points", [])]
+        selected_indices = [i for i in selected_indices if i is not None and i < len(posts)]
+
+    if selected_indices:
+        st.subheader(f"Selected {len(selected_indices)} post(s)")
+        sel_cols = st.columns(4)
+        for col_i, pt_i in enumerate(selected_indices[:20]):
+            p = posts[pt_i]
+            with sel_cols[col_i % 4]:
+                render_image(p["post_id"], p["source"], p["dataset"], width=220)
+                st.caption(
+                    f"`{p['post_id'][:16]}`  [{p['source']}]  "
+                    f"{p['character']}  d={p.get('min_dist', 0):.4f}"
+                )
+    else:
+        st.info("Click or lasso-select points to view their images.")
+
+
 def tab_explorer() -> None:
     st.header("Embedding Explorer")
 
     cfg = load_config()
     test_cases = {tc["id"]: tc for tc in cfg.get("test_cases", [])}
 
+    MAX_POINTS = 500
+
     col1, col2, col3 = st.columns([2, 2, 2])
     with col1:
         dataset = st.selectbox("Dataset", DATASET_NAMES, key="exp_dataset")
     with col2:
         all_chars = get_all_characters(dataset)
-        char_input = st.text_input("Character name", key="exp_char",
-                                   help="Start typing — matches are case-sensitive")
-        matching = [c for c in all_chars if char_input.lower() in c.lower()] if char_input else all_chars[:100]
-        character = st.selectbox("Select character", matching, key="exp_char_sel") if matching else None
+        char_input = st.text_input("Character (blank = all)", key="exp_char",
+                                   help="Leave blank to sample all characters")
+        if char_input:
+            matching = [c for c in all_chars if char_input.lower() in c.lower()]
+            character = st.selectbox("Select character", matching, key="exp_char_sel") if matching else None
+        else:
+            character = None
     with col3:
         test_case_ids = ["(none)"] + list(test_cases.keys())
         tc_sel = st.selectbox("Link to test case (for ground truth)", test_case_ids, key="exp_tc")
 
-    if not character:
-        st.info("Enter a character name to explore.")
+    uploaded = st.file_uploader(
+        "Upload image to explore vicinity (searches all datasets)",
+        type=["jpg", "jpeg", "png", "webp"], key="exp_upload",
+    )
+    if uploaded is not None:
+        _tab_explorer_upload(uploaded, DATASET_NAMES, MAX_POINTS)
         return
 
-    posts = load_character_posts(dataset, character)
+    # Load posts
+    if character:
+        posts = load_character_posts(dataset, character)
+        color_col = "cluster"
+        title = f"'{character}' in {dataset}  ({len(posts)} posts)"
+    else:
+        posts = load_all_posts(dataset, limit=MAX_POINTS)
+        color_col = "character"
+        title = f"All characters in {dataset}  ({len(posts)} sampled posts)"
+
     if not posts:
-        st.warning(f"No posts found for '{character}' in {dataset}.")
+        st.warning(f"No posts found in {dataset}.")
         return
 
     # Load ground truth if a test case is selected
@@ -170,39 +418,59 @@ def tab_explorer() -> None:
     centroids = np.array([p["centroid"] for p in posts])
     coords = pca_2d(centroids)
 
+    import pandas as pd
+    from collections import Counter
+    if color_col == "character":
+        top_chars = {c for c, _ in Counter(p["character"] for p in posts).most_common(20)}
+    else:
+        top_chars = None
+
     df_rows = []
     for i, p in enumerate(posts):
         cluster = str(gt.get(p["post_id"], "?"))
+        char = p["character"]
+        char_display = (char if char in top_chars else "other") if top_chars else char
         df_rows.append({
             "post_id": p["post_id"],
             "source": p["source"],
+            "character": char_display,
             "pc1": float(coords[i, 0]),
             "pc2": float(coords[i, 1]),
             "cluster": cluster,
             "n_emb": p["num_embeddings"],
-            "label": f"{p['post_id'][:8]} [{p['source']}] cluster={cluster}",
+            "label": f"{p['post_id'][:8]} [{p['source']}]",
         })
 
-    import pandas as pd
     df = pd.DataFrame(df_rows)
 
-    color_seq = px.colors.qualitative.Set2
+    color_seq = (px.colors.qualitative.Alphabet if color_col == "character"
+                 else px.colors.qualitative.Set2)
     fig = px.scatter(
         df, x="pc1", y="pc2",
-        color="cluster",
+        color=color_col,
         symbol="source",
-        hover_data={"post_id": True, "source": True, "n_emb": True, "pc1": False, "pc2": False},
+        custom_data=["post_id", "source", "cluster", "n_emb", "character"],
         text="label" if len(posts) <= 20 else None,
         color_discrete_sequence=color_seq,
-        title=f"'{character}' in {dataset}  ({len(posts)} posts)",
+        title=title,
         labels={"pc1": "PC1", "pc2": "PC2"},
-        height=500,
+        height=520,
     )
-    fig.update_traces(marker_size=12, textposition="top center")
-    fig.update_layout(legend_title_text="cluster / source")
+    fig.update_traces(
+        marker_size=10 if len(posts) > 50 else 14,
+        textposition="top center",
+        hovertemplate=(
+            "<b>%{customdata[4]}</b>  cluster: %{customdata[2]}<br>"
+            "post: %{customdata[0]}<br>"
+            "source: %{customdata[1]}  embeddings: %{customdata[3]}<br>"
+            "<i>click to view image</i>"
+            "<extra></extra>"
+        ),
+    )
+    fig.update_layout(legend_title_text=color_col)
 
-    # Pairwise distance matrix (small datasets only)
-    show_matrix = len(posts) <= 15
+    # Pairwise distance matrix (only in single-character mode with few posts)
+    show_matrix = character is not None and len(posts) <= 15
     if show_matrix:
         n = len(posts)
         dist_matrix = np.zeros((n, n))
@@ -219,41 +487,44 @@ def tab_explorer() -> None:
         heat.update_layout(title="Pairwise squared-L2 distance", height=400)
 
     # Render scatter + handle selection
-    event = st.plotly_chart(fig, on_select="rerun", key="scatter_chart", use_container_width=True)
+    event = st.plotly_chart(fig, on_select="rerun", key="scatter_chart", width="stretch")
     if show_matrix:
         with st.expander("Pairwise distance matrix"):
-            st.plotly_chart(heat, use_container_width=True)
+            st.plotly_chart(heat, width="stretch")
 
     # Selected point detail
     selected_indices = []
     if event and hasattr(event, "selection") and event.selection:
         selected_indices = [pt.get("point_index") for pt in event.selection.get("points", [])]
-        selected_indices = [i for i in selected_indices if i is not None]
+        selected_indices = [i for i in selected_indices if i is not None and i < len(posts)]
 
     if selected_indices:
         st.subheader(f"Selected {len(selected_indices)} post(s)")
-        cols = st.columns(min(len(selected_indices), 4))
-        for col_i, pt_i in enumerate(selected_indices[:8]):
+        sel_cols = st.columns(4)
+        for col_i, pt_i in enumerate(selected_indices[:20]):
             p = posts[pt_i]
-            with cols[col_i % 4]:
-                url = image_url(p["post_id"], p["source"], dataset)
-                st.markdown(thumbnail_html(url, p["post_id"]), unsafe_allow_html=True)
-                st.caption(f"`{p['post_id'][:16]}`  [{p['source']}]  {p['num_embeddings']} embs")
-                if tc:
-                    cur = gt.get(p["post_id"], "")
-                    st.caption(f"cluster: {cur or '(unset)'}")
+            with sel_cols[col_i % 4]:
+                render_image(p["post_id"], p["source"], p.get("dataset", dataset), width=220)
+                st.caption(
+                    f"`{p['post_id'][:16]}`  [{p['source']}]  {p['num_embeddings']} embs"
+                    + (f"  cluster={gt[p['post_id']]}" if p["post_id"] in gt else "")
+                )
     else:
-        # Show all posts as a grid
-        st.subheader("All posts")
-        cols = st.columns(4)
-        for i, p in enumerate(posts):
-            with cols[i % 4]:
-                url = image_url(p["post_id"], p["source"], dataset)
-                st.markdown(thumbnail_html(url, p["post_id"]), unsafe_allow_html=True)
-                st.caption(f"`{p['post_id'][:16]}`  [{p['source']}]\n{p['num_embeddings']} embs  cluster={gt.get(p['post_id'], '?')}")
+        if len(posts) <= 50:
+            st.subheader("All posts")
+            grid_cols = st.columns(4)
+            for i, p in enumerate(posts):
+                with grid_cols[i % 4]:
+                    render_image(p["post_id"], p["source"], p.get("dataset", dataset), width=180)
+                    st.caption(
+                        f"`{p['post_id'][:16]}`  [{p['source']}]  "
+                        f"{p['num_embeddings']} embs  cluster={gt.get(p['post_id'], '?')}"
+                    )
+        else:
+            st.info("Click or lasso-select points on the chart to view images.")
 
-    # Ground truth editor
-    if tc:
+    # Ground truth editor — only in single-character mode
+    if tc and character:
         st.divider()
         st.subheader("Ground truth editor")
         st.caption(f"Editing test case: **{tc['id']}**")
@@ -265,8 +536,7 @@ def tab_explorer() -> None:
             for p in posts:
                 pid = p["post_id"]
                 cur_val = str(gt.get(pid, ""))
-                url = image_url(pid, p["source"], dataset)
-                st.markdown(thumbnail_html(url, pid, width=80), unsafe_allow_html=True)
+                render_image(pid, p["source"], dataset, width=100)
                 new_val = st.text_input(
                     f"{pid[:12]} [{p['source']}]",
                     value=cur_val,
@@ -358,7 +628,7 @@ def tab_benchmark() -> None:
 
         st.dataframe(
             df.style.apply(highlight_max, subset=acc_cols),
-            use_container_width=True,
+            width="stretch",
             height=300,
         )
 
@@ -367,7 +637,7 @@ def tab_benchmark() -> None:
         fig = px.line(df, x="timestamp", y="mean_acc", markers=True,
                       title="Mean accuracy over runs", labels={"mean_acc": "Mean accuracy", "timestamp": ""})
         fig.update_layout(height=300)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     # Per-run detail
     with st.expander("Per-run detail"):
@@ -451,17 +721,12 @@ def tab_search() -> None:
         st.subheader("Nearest characters (by centroid distance)")
         for _, row in df.iterrows():
             nearest_posts = load_character_posts(row["dataset"], row["character"])
-            url_samples = [
-                image_url(p["post_id"], p["source"], row["dataset"])
-                for p in nearest_posts[:2]
-            ]
             cols = st.columns([1, 1, 4])
             with cols[0]:
                 st.metric(row["character"], f"d={row['distance']:.3f}", delta=row["dataset"])
             with cols[1]:
-                for u in url_samples:
-                    if u:
-                        st.markdown(thumbnail_html(u, "", width=60), unsafe_allow_html=True)
+                for p in nearest_posts[:2]:
+                    render_image(p["post_id"], p["source"], row["dataset"], width=60)
 
     else:  # Upload image
         uploaded = st.file_uploader("Upload a fursuit photo", type=["jpg", "jpeg", "png", "webp"])
@@ -488,11 +753,10 @@ def tab_search() -> None:
                         for seg in merged:
                             st.write(f"Segment {seg.segment_index} (conf={seg.segment_confidence:.2f})")
                             for m in seg.matches:
-                                url = image_url(m.post_id, m.source or "", m.source or "")
                                 cols = st.columns([2, 1, 1])
                                 with cols[0]:
                                     st.write(f"**{m.character_name}** ({m.source})")
-                                    st.markdown(thumbnail_html(url, m.post_id, width=100), unsafe_allow_html=True)
+                                    render_image(m.post_id, m.source or "", m.source or "", width=100)
                                 with cols[1]:
                                     st.metric("Confidence", f"{m.confidence:.2%}")
                                 with cols[2]:
