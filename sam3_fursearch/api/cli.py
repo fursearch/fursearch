@@ -140,8 +140,8 @@ Examples:
 
     add_parser = subparsers.add_parser("add", help="Add images for a character")
     add_parser.add_argument("--character", "-c", required=True, help="Character name")
-    add_parser.add_argument("--source", "-s", required=True, choices=SOURCES_AVAILABLE,
-                           help="Source dataset for provenance")
+    add_parser.add_argument("--source", "-s", required=True,
+                           help=f"Source dataset for provenance (e.g. {', '.join(SOURCES_AVAILABLE)})")
     add_parser.add_argument("images", nargs="+", help="Image paths")
     add_parser.add_argument("--save-crops", action="store_true", help="Save crop images for debugging")
     add_parser.add_argument("--no-full", dest="add_full_image", action="store_false",
@@ -158,8 +158,8 @@ Examples:
     ingest_parser.add_argument("method", choices=["directory", "nfc"],
                                help="Ingestion method")
     ingest_parser.add_argument("--data-dir", "-dd", help="Data directory (default: datasets/<dataset>/<source>)")
-    ingest_parser.add_argument("--source", "-s", required=False, choices=SOURCES_AVAILABLE,
-                           help="Source dataset for provenance")
+    ingest_parser.add_argument("--source", "-s", required=False,
+                           help=f"Source dataset for provenance (e.g. {', '.join(SOURCES_AVAILABLE)})")
     ingest_parser.add_argument("--limit", type=int, help="Limit number of images per character")
     ingest_parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     ingest_parser.add_argument("--save-crops", action="store_true", help="Save crop images")
@@ -179,7 +179,7 @@ Examples:
     segment_parser.add_argument("images", nargs="+", help="Image paths")
     segment_parser.add_argument("--output-dir", "-o", default="", help="Output directory for crops")
     segment_parser.add_argument("--cache-masks", action="store_true", help="Read and write masks cache")
-    segment_parser.add_argument("--source", "-s", required='--cache' in sys.argv, choices=SOURCES_AVAILABLE)
+    segment_parser.add_argument("--source", "-s", required='--cache' in sys.argv)
 
     classify_parser = subparsers.add_parser("classify", help="Classify images as fursuit or not")
     classify_parser.add_argument("path", help="Path to image file or directory")
@@ -487,9 +487,6 @@ def add_command(args):
 
     ingestor = _get_ingestor(args)
     add_full_image = getattr(args, "add_full_image", True)
-    if args.source not in SOURCES_AVAILABLE:
-        print(f"Error: Invalid source '{args.source}'. Must be one of: {', '.join(SOURCES_AVAILABLE)}")
-        sys.exit(1)
     added = ingestor.add_images(
         character_names=[args.character] * len(valid_paths),
         image_paths=valid_paths,
@@ -731,9 +728,6 @@ def ingest_from_directory(args):
         sys.exit(1)
 
     # Determine source for provenance
-    if args.source not in SOURCES_AVAILABLE:
-        print(f"Error: Invalid source '{args.source}'. Must be one of: {', '.join(SOURCES_AVAILABLE)}")
-        sys.exit(1)
     source = args.source
 
     def get_images():
