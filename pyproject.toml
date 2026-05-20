@@ -20,6 +20,7 @@ dependencies = [
     "tenacity>=9.1.4",
     "streamlit>=1.55.0",
     "plotly>=6.6.0",
+    "clip",
 ]
 
 [project.scripts]
@@ -40,3 +41,4 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
 torchvision = { index = "pytorch-cu124" }
+clip = { git = "https://github.com/ultralytics/CLIP.git" }
