@@ -21,6 +21,7 @@ dependencies = [
     "streamlit>=1.55.0",
     "plotly>=6.6.0",
     "clip",
+    "timm>=1.0.0",
 ]
 
 [project.scripts]
