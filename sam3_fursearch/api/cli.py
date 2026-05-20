@@ -170,6 +170,8 @@ Examples:
                                     "Omit value to auto-discover, or specify count.")
     ingest_parser.add_argument("--workers", "-w", type=int, default=None,
                                help="Max shards to process in parallel (default: all at once)")
+    ingest_parser.add_argument("--shard-index", type=int, default=None, help=argparse.SUPPRESS)
+    ingest_parser.add_argument("--shard-count", type=int, default=None, help=argparse.SUPPRESS)
     _add_classify_args(ingest_parser)
 
     stats_parser = subparsers.add_parser("stats", help="Show system statistics")
@@ -676,7 +678,10 @@ def _ingest_shards(args):
             active, batch_failed = _wait_for_one(active)
             failed.extend(batch_failed)
 
-        cmd = [sys.executable, "-m", "sam3_fursearch.api.cli"] + _set_dataset_in_argv(base_argv, shard_name)[1:]
+        i = shard_names.index(shard_name)
+        cmd = ([sys.executable, "-m", "sam3_fursearch.api.cli"]
+               + _set_dataset_in_argv(base_argv, shard_name)[1:]
+               + ["--shard-index", str(i), "--shard-count", str(len(shard_names))])
         print(f"  Starting: {shard_name} ({' '.join(cmd)})")
         p = subprocess.Popen(cmd)
         active.append((shard_name, p))
@@ -741,6 +746,13 @@ def ingest_from_directory(args):
             if args.limit:
                 images = images[:args.limit]
 
+            shard_idx = getattr(args, "shard_index", None)
+            shard_cnt = getattr(args, "shard_count", None)
+            if shard_idx is not None and shard_cnt:
+                images = [img for img in images if int(img.stem) % shard_cnt == shard_idx]
+
+            if not images:
+                continue
             print(f"Ingesting {len(images)} images for {character_name}")
             for img in images:
                 yield (character_name, img)
