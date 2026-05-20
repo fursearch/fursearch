@@ -12,6 +12,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 .venv/
+.venv
 .python-version
 
 # Environment
@@ -23,6 +24,7 @@ __pycache__/
 
 # Database and index files
 *.db
+*.db.*
 *.db-*
 *.index
 *.backup
@@ -33,6 +35,8 @@ embeddings/
 runs/
 fursearch_crops/
 fursearch_masks/
+*_crops/
+*_masks/
 static/models/
 
 # SSL certificates
