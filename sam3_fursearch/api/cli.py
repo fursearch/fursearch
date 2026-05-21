@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from PIL import Image
 
 from sam3_fursearch.config import Config
+from sam3_fursearch.storage.mask_storage import MaskStorage
 from sam3_fursearch.storage.database import (
     SOURCES_AVAILABLE,
     get_source_url,
@@ -158,6 +159,7 @@ Examples:
     ingest_parser.add_argument("method", choices=["directory", "nfc"],
                                help="Ingestion method")
     ingest_parser.add_argument("--data-dir", "-dd", help="Data directory (default: datasets/<dataset>/<source>)")
+    ingest_parser.add_argument("--masks-dir", help="Masks cache directory (default: fursearch_masks next to package)")
     ingest_parser.add_argument("--source", "-s", required=False,
                            help=f"Source dataset for provenance (e.g. {', '.join(SOURCES_AVAILABLE)})")
     ingest_parser.add_argument("--limit", type=int, help="Limit number of images per character")
@@ -325,6 +327,9 @@ def _get_identifier(args):
 def _get_ingestor(args):
     from sam3_fursearch.api.ingestor import FursuitIngestor
     kwargs = _get_common_kwargs(args)
+    masks_dir = getattr(args, "masks_dir", None)
+    if masks_dir:
+        kwargs["mask_storage"] = MaskStorage(base_dir=masks_dir)
     return FursuitIngestor(
         db_path=args.db,
         index_path=args.index,
